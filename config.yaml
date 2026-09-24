@@ -1,0 +1,18 @@
+db_path: null
+min_file_size: 504857600
+exclude_patterns:
+  - "*.tmp"
+  - "*.temp"
+  - "Thumbs.db"
+  - "desktop.ini"
+  - ".DS_Store"
+  - "*.lnk"
+  - "~$*"
+exclude_extensions: []
+exclude_dirs:
+  - "$RECYCLE.BIN"
+  - "System Volume Information"
+  - ".Trash-*"
+  - "DUPLICATED"
+quick_hash_chunk_size: 65536
+full_hash_chunk_size: 1048576

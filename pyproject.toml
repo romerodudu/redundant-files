@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "redundant-files"
+version = "0.1.0"
+description = "Duplicate file detector and manager"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "click",
+    "rich",
+    "blake3",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[project.scripts]
+redundant-files = "redundant_files.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
