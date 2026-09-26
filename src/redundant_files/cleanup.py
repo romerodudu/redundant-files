@@ -20,6 +20,29 @@ class FileToDelete:
     volume_label: str
     relative_path: str
     file_size: int
+    last_drive_letter: str = ""
+
+    @property
+    def volume_display_name(self) -> str:
+        letter = (self.last_drive_letter or "").rstrip("\\")
+        lbl = (self.volume_label or "").strip()
+        if lbl and letter:
+            return f"{lbl} ({letter})"
+        elif lbl:
+            return lbl
+        elif letter:
+            return f"Drive {letter}"
+        else:
+            return f"Volume {self.volume_id}"
+
+    @property
+    def full_path(self) -> str:
+        letter = (self.last_drive_letter or "").rstrip("\\")
+        if letter:
+            clean_rel = self.relative_path.lstrip("\\/")
+            return f"{letter}\\{clean_rel}"
+        lbl = self.volume_display_name
+        return f"{lbl}:{self.relative_path}"
 
 @dataclass
 class FileToKeep:
@@ -27,6 +50,29 @@ class FileToKeep:
     volume_id: int
     volume_label: str
     relative_path: str
+    last_drive_letter: str = ""
+
+    @property
+    def volume_display_name(self) -> str:
+        letter = (self.last_drive_letter or "").rstrip("\\")
+        lbl = (self.volume_label or "").strip()
+        if lbl and letter:
+            return f"{lbl} ({letter})"
+        elif lbl:
+            return lbl
+        elif letter:
+            return f"Drive {letter}"
+        else:
+            return f"Volume {self.volume_id}"
+
+    @property
+    def full_path(self) -> str:
+        letter = (self.last_drive_letter or "").rstrip("\\")
+        if letter:
+            clean_rel = self.relative_path.lstrip("\\/")
+            return f"{letter}\\{clean_rel}"
+        lbl = self.volume_display_name
+        return f"{lbl}:{self.relative_path}"
 
 @dataclass
 class CleanupAction:
@@ -84,13 +130,13 @@ class CleanupManager:
                 
                 info_path = dst.with_suffix(dst.suffix + ".info.txt")
                 with info_path.open("w", encoding="utf-8") as f:
-                    f.write(f"Original path: {f_delete.relative_path}\n")
-                    f.write(f"Kept copy: {f_keep.volume_label}:{f_keep.relative_path}\n")
+                    f.write(f"Original path: [{f_delete.volume_display_name}] {f_delete.full_path}\n")
+                    f.write(f"Kept copy: [{f_keep.volume_display_name}] {f_keep.full_path}\n")
                     f.write(f"Hash: blake3:{action.full_hash}\n")
                     f.write(f"Moved at: {datetime.now(timezone.utc).isoformat()}\n")
                     
                 self.db.mark_file_deleted(f_delete.file_id)
-                console.print(f"[green]Moved: {f_delete.relative_path}[/green]")
+                console.print(f"[green]Moved: [{f_delete.volume_display_name}] {f_delete.relative_path}[/green]")
 
     def execute_pass2(self, volume_id: int, drive_letter: str, console: Console) -> int:
         """Pass 2: Delete DUPLICATED/ folder on the given volume. Returns bytes freed."""
@@ -126,7 +172,7 @@ class CleanupManager:
                 if src.exists():
                     try:
                         src.unlink()
-                        console.print(f"[green]Deleted: {f_delete.relative_path}[/green]")
+                        console.print(f"[green]Deleted: [{f_delete.volume_display_name}] {f_delete.relative_path}[/green]")
                     except OSError as e:
                         console.print(f"[red]Error deleting {src}: {e}[/red]")
                         continue

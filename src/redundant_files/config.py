@@ -8,6 +8,7 @@ DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.yaml"
 
 @dataclass
 class Config:
+    config_source: Path | None = None
     db_path: Path = field(default_factory=lambda: DEFAULT_DB_PATH)
     min_file_size: int = 1_048_576  # 1MB default
     exclude_patterns: list[str] = field(default_factory=lambda: [
@@ -24,14 +25,25 @@ class Config:
     
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":
-        """Load config from YAML file. Create default if not exists."""
-        if path is None:
-            path = DEFAULT_CONFIG_PATH
-            
-        if not path.exists():
+        """Load config from YAML file.
+        Priority:
+          1. Explicit path passed as argument
+          2. ./config.yaml (in current working directory)
+          3. ~/.redundant-files/config.yaml (global default)
+        """
+        if path is not None:
+            config_file = path
+        else:
+            local_config = Path("config.yaml")
+            if local_config.is_file():
+                config_file = local_config.resolve()
+            else:
+                config_file = DEFAULT_CONFIG_PATH
+
+        if not config_file.exists():
             return cls.ensure_defaults()
 
-        with open(path, "r", encoding="utf-8") as f:
+        with open(config_file, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
 
         if "db_path" in data and data["db_path"] is not None:
@@ -42,6 +54,7 @@ class Config:
         # Filter valid keys
         valid_keys = cls.__dataclass_fields__.keys()
         filtered_data = {k: v for k, v in data.items() if k in valid_keys}
+        filtered_data["config_source"] = config_file.resolve()
             
         return cls(**filtered_data)
     

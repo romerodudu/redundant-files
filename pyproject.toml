@@ -13,6 +13,8 @@ dependencies = [
     "rich",
     "blake3",
     "pyyaml",
+    "questionary",
+    'windows-curses; platform_system == "Windows"',
 ]
 
 [project.optional-dependencies]

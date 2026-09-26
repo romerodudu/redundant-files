@@ -69,6 +69,18 @@ class Database:
                 self.conn.execute("SELECT status FROM scans LIMIT 1")
             except sqlite3.OperationalError:
                 self.conn.execute("ALTER TABLE scans ADD COLUMN status TEXT DEFAULT 'completed'")
+            
+            # Create ignored_groups table
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS ignored_groups (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    full_hash TEXT UNIQUE NOT NULL,
+                    file_count INTEGER,
+                    file_size INTEGER,
+                    reason TEXT DEFAULT '',
+                    ignored_at REAL NOT NULL
+                )
+            """)
     
     # --- Volumes ---
     def upsert_volume(self, serial_number: str, marker_uuid: str, label: str,
@@ -190,21 +202,35 @@ class Database:
         with self.conn:
             self.conn.execute("UPDATE files SET is_deleted = 1 WHERE id = ?", (file_id,))
             
-    def mark_missing_files(self, volume_id: int, existing_paths: set[str]):
-        """Mark as deleted all non-deleted files for a volume whose relative_path is NOT in the provided set."""
+    def mark_missing_files(self, volume_id: int, existing_paths: set[str], prefix: str = ""):
+        """Mark as deleted non-deleted files for a volume under prefix whose relative_path is NOT in existing_paths."""
         with self.conn:
             self.conn.execute("CREATE TEMP TABLE IF NOT EXISTS current_paths (path TEXT)")
             self.conn.execute("DELETE FROM current_paths")
             self.conn.executemany("INSERT INTO current_paths (path) VALUES (?)", [(p,) for p in existing_paths])
             
-            self.conn.execute(
-                """
-                UPDATE files
-                SET is_deleted = 1
-                WHERE volume_id = ? AND is_deleted = 0 AND relative_path NOT IN (SELECT path FROM current_paths)
-                """,
-                (volume_id,)
-            )
+            if prefix:
+                prefix_clean = prefix.rstrip('/\\').replace('\\', '/') + '/%'
+                exact_clean = prefix.rstrip('/\\').replace('\\', '/')
+                self.conn.execute(
+                    """
+                    UPDATE files
+                    SET is_deleted = 1
+                    WHERE volume_id = ? AND is_deleted = 0 
+                      AND (relative_path LIKE ? OR relative_path = ?)
+                      AND relative_path NOT IN (SELECT path FROM current_paths)
+                    """,
+                    (volume_id, prefix_clean, exact_clean)
+                )
+            else:
+                self.conn.execute(
+                    """
+                    UPDATE files
+                    SET is_deleted = 1
+                    WHERE volume_id = ? AND is_deleted = 0 AND relative_path NOT IN (SELECT path FROM current_paths)
+                    """,
+                    (volume_id,)
+                )
             self.conn.execute("DROP TABLE current_paths")
             
     def get_files_by_size(self, file_size: int, exclude_deleted: bool = True) -> list[dict]:
@@ -221,20 +247,43 @@ class Database:
             cur = self.conn.execute("SELECT * FROM files WHERE quick_hash = ?", (quick_hash,))
         return [dict(row) for row in cur.fetchall()]
         
-    def get_files_needing_full_hash(self) -> list[dict]:
+    def get_files_needing_full_hash(self, volume_id: int | None = None) -> list[dict]:
         """Get files whose quick_hash appears more than once but full_hash is NULL."""
-        cur = self.conn.execute(
-            """
+        query = """
             SELECT f.*
             FROM files f
             JOIN (
                 SELECT quick_hash
                 FROM files
-                WHERE is_deleted = 0
+                WHERE is_deleted = 0 AND quick_hash IS NOT NULL
                 GROUP BY quick_hash
                 HAVING COUNT(*) > 1
             ) dup_quick ON f.quick_hash = dup_quick.quick_hash
             WHERE f.is_deleted = 0 AND f.full_hash IS NULL
+        """
+        params = []
+        if volume_id is not None:
+            query += " AND f.volume_id = ?"
+            params.append(volume_id)
+        cur = self.conn.execute(query, params)
+        return [dict(row) for row in cur.fetchall()]
+
+    def get_pending_cross_volume_hashes(self) -> list[dict]:
+        """Get candidate duplicate files whose quick_hash matched, but full_hash is still pending."""
+        cur = self.conn.execute(
+            """
+            SELECT f.*, v.label as volume_label, v.serial_number as volume_serial, v.last_drive_letter
+            FROM files f
+            JOIN volumes v ON f.volume_id = v.id
+            JOIN (
+                SELECT quick_hash
+                FROM files
+                WHERE is_deleted = 0 AND quick_hash IS NOT NULL
+                GROUP BY quick_hash
+                HAVING COUNT(*) > 1
+            ) dup_quick ON f.quick_hash = dup_quick.quick_hash
+            WHERE f.is_deleted = 0 AND f.full_hash IS NULL
+            ORDER BY f.volume_id, f.file_size DESC
             """
         )
         return [dict(row) for row in cur.fetchall()]
@@ -330,5 +379,48 @@ class Database:
         )
         return [dict(row) for row in cur.fetchall()]
     
+    # --- Volume Reset ---
+    def reset_volume(self, volume_id: int, remove_volume: bool = False) -> tuple[int, int]:
+        """Clear all DB records (files, scans) for a volume. Does NOT touch real files.
+        Returns (files_cleared, scans_cleared)."""
+        with self.conn:
+            cur_f = self.conn.execute("DELETE FROM files WHERE volume_id = ?", (volume_id,))
+            cur_s = self.conn.execute("DELETE FROM scans WHERE volume_id = ?", (volume_id,))
+            files_cleared = cur_f.rowcount
+            scans_cleared = cur_s.rowcount
+            if remove_volume:
+                self.conn.execute("DELETE FROM volumes WHERE id = ?", (volume_id,))
+        self.refresh_duplicate_groups()
+        return files_cleared, scans_cleared
+
+    # --- Ignored Groups ---
+    def ignore_group(self, full_hash: str, file_count: int = 0, file_size: int = 0, reason: str = "") -> None:
+        """Mark a duplicate group as ignored/accepted."""
+        now = time.time()
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO ignored_groups (full_hash, file_count, file_size, reason, ignored_at) VALUES (?, ?, ?, ?, ?)",
+                (full_hash, file_count, file_size, reason, now)
+            )
+
+    def unignore_group(self, full_hash: str) -> None:
+        """Remove a group from the ignored list."""
+        with self.conn:
+            self.conn.execute("DELETE FROM ignored_groups WHERE full_hash = ?", (full_hash,))
+
+    def is_group_ignored(self, full_hash: str) -> bool:
+        cur = self.conn.execute("SELECT 1 FROM ignored_groups WHERE full_hash = ?", (full_hash,))
+        return cur.fetchone() is not None
+
+    def list_ignored_groups(self) -> list[dict]:
+        cur = self.conn.execute("SELECT * FROM ignored_groups ORDER BY ignored_at DESC")
+        return [dict(row) for row in cur.fetchall()]
+
+    def clear_ignored_groups(self) -> int:
+        """Remove all ignored groups. Returns count removed."""
+        with self.conn:
+            cur = self.conn.execute("DELETE FROM ignored_groups")
+            return cur.rowcount
+
     def close(self):
         self.conn.close()
